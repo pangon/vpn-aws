@@ -1,0 +1,25 @@
+# vpn-aws configuration.
+#
+# Copy this file to ~/.config/vpn-aws/config.toml and fill in the values.
+# Restrict permissions (chmod 600): the OAuth secret can mint auth keys
+# for your tailnet.
+
+[tailscale]
+# OAuth client credentials (docs/runbooks/01-tailscale-setup.md, step 4).
+oauth_client_id = "REPLACE_ME"
+oauth_client_secret = "REPLACE_ME"
+
+# Tag the exit nodes join with. Must match the tagOwners/autoApprovers
+# entries in your tailnet policy and the tag on the OAuth client.
+#tag = "tag:vpn-aws"
+
+# Tailnet name; "-" means "the tailnet the OAuth client belongs to".
+#tailnet = "-"
+
+[aws]
+# AWS CLI profile to use; omit to use the default credential chain.
+#profile = "vpn-aws"
+
+# Instance type; must be arm64/Graviton. Default t4g.nano (~$0.004/h);
+# pick a larger t4g size if you need more throughput.
+#instance_type = "t4g.nano"
