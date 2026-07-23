@@ -226,7 +226,88 @@ Standing cost while idle: **$0**, provided teardown is complete — no reserved 
 IPs (use the dynamic public IP; the exit node is re-discovered through the tailnet each
 session anyway), EBS volume deleted with the instance, no leftover snapshots.
 
-## 7. References
+## 7. Orchestration design (decided 2026-07-23)
+
+With the Tailscale approach accepted, the second round of decisions concerned how the
+orchestrator that creates and destroys the ephemeral EC2 exit node should be built.
+
+### 7.1 Provisioning mechanism: direct AWS API calls + tag-based lifecycle
+
+Three mechanisms were considered:
+
+- **Direct AWS API calls (chosen).** `up` is essentially a single `RunInstances` call
+  (tags applied atomically at launch via `TagSpecifications`, cloud-init user-data
+  performing the Tailscale join); `down` discovers instances by tag
+  (`Project=vpn-aws`) and terminates them. The state *is* the tags in AWS: no state
+  files, nothing to lose, crash-safe by construction — if the client machine dies
+  mid-session, `down`/`status` rediscover everything by scanning tags.
+- **CloudFormation stack per session** — rejected. Server-side state and guaranteed
+  cleanup via `delete-stack` are attractive, but add latency and template maintenance
+  that are not justified when the per-session resource set is a single instance.
+- **Terraform/OpenTofu** — rejected. State management fits ephemeral use poorly: lost
+  local state means orphaned resources, remote state means standing S3/DynamoDB
+  infrastructure (against the zero-footprint philosophy), and it is a heavyweight
+  dependency for users.
+
+The design rule that makes direct API calls safe: **the only resource created per
+session is the EC2 instance itself.**
+
+- Use the region's **default VPC** and its **default security group** — which has no
+  inbound rules from the internet; none are needed, since the Tailscale node makes
+  outbound connections only and NAT traversal handles the data path.
+- **No key pair** (Tailscale SSH covers emergency access), **no Elastic IP** (dynamic
+  public IPv4; the node is reached through the tailnet, not by address), root EBS
+  volume **delete-on-termination**, **IMDSv2 required**.
+- AMI resolved at runtime via the **public SSM parameter** for Amazon Linux 2023 arm64
+  — region-agnostic, no AMI maps to maintain.
+
+If nothing but the instance is created, teardown = terminate, and orphaned-resource
+bugs are impossible by construction. Known caveat: accounts whose default VPC was
+deleted in a region must be handled gracefully (documented limitation).
+
+### 7.2 CLI: Python + boto3, run via uv
+
+- **Python + uv (chosen):** boto3 is the most ergonomic AWS SDK, iteration is fast,
+  the code stays readable for open source contributors, and uv's inline script
+  dependencies remove virtualenv friction for users.
+- **Go** — rejected for v1: best distribution story (single static binary) but
+  noticeably more boilerplate; a natural v2 rewrite if the project gets traction, and
+  the logic is trivial to port.
+- **Bash + AWS CLI** — rejected: polling, error handling and JSON wrangling get messy,
+  and it is the hardest option to test.
+
+### 7.3 Safety watchdog: mandatory TTL self-termination
+
+The worst failure mode of a pay-per-use tool is the forgotten instance. Mitigation
+built into user-data: schedule a self-shutdown at a configurable TTL (default a few
+hours, e.g. `up --ttl 2h`) and launch with
+`InstanceInitiatedShutdownBehavior=terminate`, so the instance **self-destructs even
+if the client machine dies and `down` is never run**. Worst case for a forgotten
+session is bounded at cents rather than a month of billing.
+
+### 7.4 Exit node selection: manual, CLI manages AWS only
+
+After `up`, the user selects the exit node from the Tailscale client they are using
+(systray on desktop, app on mobile). The alternative — the CLI also flipping the local
+machine's exit node via `tailscale set --exit-node` — was rejected to keep the tool
+OS-agnostic and AWS-only (it would otherwise need to locate and drive the local
+Tailscale CLI, including the Windows-host-from-WSL2 case).
+
+### 7.5 Session flow
+
+```
+vpn up <region> [--ttl 2h]   # mint ephemeral Tailscale auth key (OAuth client)
+                             # → RunInstances → poll Tailscale API until the node
+                             #   is online (~60-90s) → ready
+vpn status                   # tagged instances across regions + tailnet state
+vpn down                     # terminate tagged instances; the ephemeral node
+                             #   evaporates from the tailnet on its own
+```
+
+Tailscale OAuth client credentials live in a local config file (e.g.
+`~/.config/vpn-aws/`), never in the repository.
+
+## 8. References
 
 - Tailscale: [pricing](https://tailscale.com/pricing) ·
   [pricing v4 announcement](https://tailscale.com/blog/pricing-v4) ·
