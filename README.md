@@ -119,3 +119,7 @@ Idle cost: **$0**.
 - [docs/DECISIONS.md](docs/DECISIONS.md) — the full design decision record.
 - [docs/runbooks/](docs/runbooks/) — step-by-step runbooks for every
   activity, one-time and recurring.
+
+## License
+
+[MIT](LICENSE) © Claudio Felicioli
